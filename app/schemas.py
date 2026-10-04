@@ -8,12 +8,38 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 
+class PoolCreate(BaseModel):
+    film_id: str = Field(min_length=1, max_length=128, examples=["film-autumn-river"])
+    max_sessions: int = Field(
+        ge=1, le=1_000_000,
+        description="影片级跨场馆共享放映次数上限（正整数）",
+        examples=[10],
+    )
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class PoolOut(BaseModel):
+    id: int
+    film_id: str
+    max_sessions: int
+    used_sessions: int
+    remaining_sessions: int
+    bound_licenses: int = Field(description="当前绑定该池的授权份数")
+    note: Optional[str]
+    created_at: str
+
+
 class LicenseCreate(BaseModel):
     film_id: str = Field(min_length=1, max_length=128, examples=["film-autumn-river"])
     venue_id: str = Field(min_length=1, max_length=128, examples=["hall-1"])
     valid_from: datetime = Field(examples=["2026-10-01T00:00:00Z"])
     valid_to: datetime = Field(examples=["2026-10-31T23:59:59Z"])
     max_sessions: int = Field(ge=1, le=1_000_000, examples=[5])
+    pool_id: Optional[int] = Field(
+        default=None,
+        description="可选：绑定影片级共享额度池；绑定后不可修改。池不存在或影片不符返回 422。",
+        examples=[1],
+    )
     note: Optional[str] = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
@@ -21,6 +47,14 @@ class LicenseCreate(BaseModel):
         if self.valid_to <= self.valid_from:
             raise ValueError("valid_to must be later than valid_from")
         return self
+
+
+class PoolBrief(BaseModel):
+    id: int
+    film_id: str
+    max_sessions: int
+    used_sessions: int
+    remaining_sessions: int
 
 
 class RevocationOut(BaseModel):
@@ -37,6 +71,10 @@ class LicenseOut(BaseModel):
     max_sessions: int
     used_sessions: int
     remaining_sessions: int
+    pool_id: Optional[int] = Field(description="所绑共享额度池 id；未绑定为 null")
+    pool: Optional[PoolBrief] = Field(
+        description="所绑池的实时已用/剩余快照；未绑定为 null"
+    )
     revoked: bool
     revocation: Optional[RevocationOut]
     note: Optional[str]
@@ -76,9 +114,16 @@ class VerificationOut(BaseModel):
     start_time: str
     decision: str = Field(description="approved 或 rejected")
     license_id: Optional[int] = Field(description="命中并消耗额度的授权 id")
-    reject_reason: Optional[str] = Field(
-        description="拒绝原因：NO_LICENSE / TIME_OUT_OF_WINDOW / LICENSE_REVOKED / QUOTA_EXHAUSTED"
+    pool_id: Optional[int] = Field(
+        description="本次核准同时消耗的共享池 id；授权未绑池或被拒绝时为 null"
     )
-    remaining_quota: Optional[int] = Field(description="本次消耗后该授权的剩余额度")
+    reject_reason: Optional[str] = Field(
+        description="拒绝原因：NO_LICENSE / TIME_OUT_OF_WINDOW / LICENSE_REVOKED / "
+                    "QUOTA_EXHAUSTED / POOL_EXHAUSTED"
+    )
+    remaining_quota: Optional[int] = Field(description="本次消耗后该授权自身的剩余额度")
+    pool_remaining_quota: Optional[int] = Field(
+        description="本次消耗后所绑共享池的剩余额度；授权未绑池或被拒绝时为 null"
+    )
     verified_at: str
     replay: bool = Field(description="true 表示本次为幂等重放，未重新扣减额度")

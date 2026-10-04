@@ -6,6 +6,15 @@ import os
 import sqlite3
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS quota_pools (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    film_id     TEXT    NOT NULL,                  -- 池为影片级共享额度
+    max_sessions INTEGER NOT NULL CHECK (max_sessions >= 1),
+    note        TEXT,
+    created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quota_pools_film ON quota_pools (film_id);
+
 CREATE TABLE IF NOT EXISTS licenses (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     film_id       TEXT    NOT NULL,
@@ -13,6 +22,7 @@ CREATE TABLE IF NOT EXISTS licenses (
     valid_from    TEXT    NOT NULL,               -- canonical UTC ISO-8601
     valid_to      TEXT    NOT NULL,               -- canonical UTC ISO-8601
     max_sessions  INTEGER NOT NULL CHECK (max_sessions >= 1),
+    pool_id       INTEGER REFERENCES quota_pools (id),  -- 绑定后不可改；NULL=未绑定旧语义
     note          TEXT,
     created_at    TEXT    NOT NULL
 );
@@ -35,13 +45,35 @@ CREATE TABLE IF NOT EXISTS verifications (
     start_time      TEXT    NOT NULL,             -- canonical UTC ISO-8601
     decision        TEXT    NOT NULL CHECK (decision IN ('approved', 'rejected')),
     license_id      INTEGER REFERENCES licenses (id),
+    pool_id         INTEGER REFERENCES quota_pools (id),  -- 本次核准所消耗的池
     reject_reason   TEXT,
-    remaining_quota INTEGER,
+    remaining_quota INTEGER,                      -- 命中授权消耗后的自身剩余
+    pool_remaining_quota INTEGER,                 -- 所绑池消耗后的剩余（无池为 NULL）
     created_at      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_verifications_license
     ON verifications (license_id, decision);
 """
+
+# Columns added after the initial release; applied lazily so databases
+# created by older versions keep working without a manual migration.
+_EXTRA_COLUMNS = {
+    "licenses": [
+        ("pool_id", "INTEGER REFERENCES quota_pools (id)"),
+    ],
+    "verifications": [
+        ("pool_id", "INTEGER REFERENCES quota_pools (id)"),
+        ("pool_remaining_quota", "INTEGER"),
+    ],
+}
+
+# Indexes on columns introduced after the first release; created after the
+# columns above exist, hence kept out of SCHEMA (IF NOT EXISTS makes this a
+# no-op on databases that already have them).
+_EXTRA_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_licenses_pool ON licenses (pool_id)",
+    "CREATE INDEX IF NOT EXISTS idx_verifications_pool ON verifications (pool_id, decision)",
+]
 
 
 def connect(db_path: str) -> sqlite3.Connection:
@@ -60,8 +92,23 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the first release when missing."""
+    for table, columns in _EXTRA_COLUMNS.items():
+        existing = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    for stmt in _EXTRA_INDEXES:
+        conn.execute(stmt)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
 
 
 def init_db(db_path: str) -> None:
