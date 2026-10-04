@@ -1,0 +1,20 @@
+services:
+  licensing:
+    build: .
+    image: filmfest-licensing:latest
+    container_name: filmfest-licensing
+    ports:
+      - "8000:8000"
+    environment:
+      # SQLite 数据库文件（容器内路径，挂载卷持久化）
+      FESTIVAL_DB_PATH: /data/filmfest.db
+      # 服务端口（容器内）
+      PORT: "8000"
+      # 置为 1 时，空库启动会写入两条演示授权，便于直接体验核验流程
+      SEED_DEMO_DATA: "1"
+    volumes:
+      - licensing-data:/data
+    restart: unless-stopped
+
+volumes:
+  licensing-data:
